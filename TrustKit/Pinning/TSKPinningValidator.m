@@ -31,9 +31,6 @@
     }
     CFRetain(serverTrust);
     
-    // Register start time for duration computations
-    NSTimeInterval validationStartTime = [NSDate timeIntervalSinceReferenceDate];
-    
     // Retrieve the pinning configuration for this specific domain, if there is one
     NSDictionary *trustKitConfig = [TrustKit configuration];
     NSString *domainConfigKey = getPinningConfigurationKeyForDomain(serverHostname, trustKitConfig);
@@ -58,16 +55,6 @@
         {
             // Pin validation failed
             TSKLog(@"Pin validation failed for %@", serverHostname);
-#if !TARGET_OS_IPHONE
-            if ((validationResult == TSKPinValidationResultFailedUserDefinedTrustAnchor)
-                && ([trustKitConfig[kTSKIgnorePinningForUserDefinedTrustAnchors] boolValue] == YES))
-            {
-                // OS-X only: user-defined trust anchors can be whitelisted (for corporate proxies, etc.) so don't send reports
-                TSKLog(@"Ignoring pinning failure due to user-defined trust anchor for %@", serverHostname);
-                finalTrustDecision = TSKTrustDecisionShouldAllowConnection;
-            }
-            else
-#endif
             {
                 if (validationResult == TSKPinValidationResultFailed)
                 {
@@ -89,9 +76,6 @@
                 }
             }
         }
-        // Send a notification after all validation is done; this will also trigger a report if pin validation failed
-        NSTimeInterval validationDuration = [NSDate timeIntervalSinceReferenceDate] - validationStartTime;
-        sendValidationNotification_async(serverHostname, serverTrust, domainConfigKey, validationResult, finalTrustDecision, validationDuration);
     }
     CFRelease(serverTrust);
     

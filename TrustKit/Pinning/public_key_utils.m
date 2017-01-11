@@ -52,9 +52,9 @@ static unsigned char *asn1HeaderBytes[3] = { rsa2048Asn1Header, rsa4096Asn1Heade
 static unsigned int asn1HeaderSizes[3] = { sizeof(rsa2048Asn1Header), sizeof(rsa4096Asn1Header), sizeof(ecDsaSecp256r1Asn1Header) };
 
 
-#if TARGET_OS_WATCH || TARGET_OS_TV || (TARGET_OS_IOS &&__IPHONE_OS_VERSION_MAX_ALLOWED >= 100000) || (!TARGET_OS_IPHONE && __MAC_OS_X_VERSION_MAX_ALLOWED >= 101200)
+#if (TARGET_OS_IOS &&__IPHONE_OS_VERSION_MAX_ALLOWED >= 100000)
 
-#pragma mark Public Key Converter - iOS 10.0+, macOS 10.12+, watchOS 3.0, tvOS 10.0
+#pragma mark Public Key Converter - iOS 10.0+
 
 // Use the unified SecKey API (specifically SecKeyCopyExternalRepresentation())
 static NSData *getPublicKeyDataFromCertificate_unified(SecCertificateRef certificate)
@@ -146,50 +146,8 @@ static NSData *getPublicKeyDataFromCertificate_legacy_ios(SecCertificateRef cert
 }
 #endif
 
-
-#if !TARGET_OS_IPHONE && __MAC_OS_X_VERSION_MIN_REQUIRED < 101200
-
-#pragma mark Public Key Converter - macOS before 10.12
-
-// Need to support macOS before 10.12
-
-static NSData *getPublicKeyDataFromCertificate_legacy_macos(SecCertificateRef certificate)
-{
-    NSData *publicKeyData = nil;
-    CFErrorRef error = NULL;
-    
-    // SecCertificateCopyValues() is macOS only
-    NSArray *oids = [NSArray arrayWithObject:(__bridge id)(kSecOIDX509V1SubjectPublicKey)];
-    CFDictionaryRef certificateValues = SecCertificateCopyValues(certificate, (__bridge CFArrayRef)(oids), &error);
-    if (certificateValues == NULL)
-    {
-        CFStringRef errorDescription = CFErrorCopyDescription(error);
-        TSKLog(@"SecCertificateCopyValues() error: %@", errorDescription);
-        CFRelease(errorDescription);
-        CFRelease(error);
-        return nil;
-    }
-    
-    for (NSString* fieldName in (__bridge NSDictionary *)certificateValues)
-    {
-        NSDictionary *fieldDict = CFDictionaryGetValue(certificateValues, (__bridge const void *)(fieldName));
-        if ([fieldDict[(__bridge __strong id)(kSecPropertyKeyLabel)] isEqualToString:@"Public Key Data"])
-        {
-            publicKeyData = fieldDict[(__bridge __strong id)(kSecPropertyKeyValue)];
-        }
-    }
-    CFRelease(certificateValues);
-    return publicKeyData;
-}
-#endif
-
-
 static NSData *getPublicKeyDataFromCertificate(SecCertificateRef certificate)
 {
-#if TARGET_OS_WATCH || TARGET_OS_TV
-    // watchOS 3+ or tvOS 10+
-    return getPublicKeyDataFromCertificate_unified(certificate);
-#elif TARGET_OS_IOS
     // iOS 7+
 #if __IPHONE_OS_VERSION_MAX_ALLOWED < 100000
     // Base SDK is iOS 7, 8 or 9
@@ -207,26 +165,6 @@ static NSData *getPublicKeyDataFromCertificate(SecCertificateRef certificate)
         // iOS 7, 8, 9
         return getPublicKeyDataFromCertificate_legacy_ios(certificate);
     }
-#endif
-#else
-    // macOS 10.9+
-#if __MAC_OS_X_VERSION_MAX_ALLOWED < 101200
-    // Base SDK is macOS 10.9, 10.10 or 10.11
-    return getPublicKeyDataFromCertificate_legacy_macos(certificate);
-#else
-    // Base SDK is macOS 10.12 - try to use the unified Security APIs if available
-    NSProcessInfo *processInfo = [NSProcessInfo processInfo];
-    if ([processInfo respondsToSelector:@selector(isOperatingSystemAtLeastVersion:)] && [processInfo isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion){10, 12, 0}])
-    {
-        // macOS 10.12+
-        return getPublicKeyDataFromCertificate_unified(certificate);
-    }
-    else
-    {
-        // macOS 10.9, 10.10, 10.11
-        return getPublicKeyDataFromCertificate_legacy_macos(certificate);
-    }
-#endif
 #endif
 }
 

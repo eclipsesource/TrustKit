@@ -14,7 +14,7 @@
 #import "public_key_utils.h"
 #import "TrustKit+Private.h"
 
-
+#define WildcardDomainPrefix @"*."
 
 #pragma mark Utility functions
 
@@ -26,22 +26,22 @@ static BOOL isSubdomain(NSString *domain, NSString *subdomain)
         // Different TLDs
         return NO;
     }
-    
+
     // Retrieve the main domain without the TLD
     // When initializing TrustKit, we check that [domain length] > domainRegistryLength
     NSString *domainLabel = [domain substringToIndex:([domain length] - domainRegistryLength - 1)];
-    
+
     // Retrieve the subdomain's domain without the TLD
     NSString *subdomainLabel = [subdomain substringToIndex:([subdomain length] - domainRegistryLength - 1)];
-    
+
     // Does the subdomain contain the domain
     NSArray *subComponents = [subdomainLabel componentsSeparatedByString:domainLabel];
     if ([[subComponents lastObject] isEqualToString:@""])
-         {
-             // This is a subdomain
-             return YES;
-         }
-    
+    {
+        // This is a subdomain
+        return YES;
+    }
+
     return NO;
 }
 
@@ -50,7 +50,7 @@ NSString *getPinningConfigurationKeyForDomain(NSString *hostname, NSDictionary *
 {
     NSString *configHostname = nil;
     NSDictionary *domainsPinningPolicy = trustKitConfiguration[kTSKPinnedDomains];
-    
+
     if (domainsPinningPolicy[hostname] == nil)
     {
         // No pins explicitly configured for this domain
@@ -62,12 +62,16 @@ NSString *getPinningConfigurationKeyForDomain(NSString *hostname, NSDictionary *
             {
                 // Is the server a subdomain of this pinned server?
                 TSKLog(@"Checking includeSubdomains configuration for %@", pinnedServerName);
-                if (isSubdomain(pinnedServerName, hostname))
-                {
-                    // Yes; let's use the parent domain's pinning configuration
-                    TSKLog(@"Applying includeSubdomains configuration from %@ to %@", pinnedServerName, hostname);
-                    configHostname = pinnedServerName;
-                    break;
+
+                if ([pinnedServerName rangeOfString:WildcardDomainPrefix].location == 0) {
+                    NSString* domainName = [pinnedServerName substringFromIndex:WildcardDomainPrefix.length];
+                    if (![domainName isEqualToString:hostname] && isSubdomain(domainName, hostname))
+                    {
+                        // Yes; let's use the parent domain's pinning configuration
+                        TSKLog(@"Applying includeSubdomains configuration from %@ to %@", pinnedServerName, hostname);
+                        configHostname = pinnedServerName;
+                        break;
+                    }
                 }
             }
         }
@@ -77,7 +81,7 @@ NSString *getPinningConfigurationKeyForDomain(NSString *hostname, NSDictionary *
         // This hostname has a pinnning configuration
         configHostname = hostname;
     }
-    
+
     if (configHostname == nil)
     {
         TSKLog(@"Domain %@ is not pinned", hostname);
@@ -100,13 +104,13 @@ TSKPinValidationResult verifyPublicKeyPin(SecTrustRef serverTrust, NSString *ser
     // This gives us revocation (only for EV certs I think?) and also ensures the certificate chain is sane
     // And also gives us the exact path that successfully validated the chain
     CFRetain(serverTrust);
-    
+
     // Create and use a sane SSL policy to force hostname validation, even if the supplied trust has a bad
     // policy configured (such as one from SecPolicyCreateBasicX509())
     SecPolicyRef SslPolicy = SecPolicyCreateSSL(YES, (__bridge CFStringRef)(serverHostname));
     SecTrustSetPolicies(serverTrust, SslPolicy);
     CFRelease(SslPolicy);
-    
+
     SecTrustResultType trustResult = 0;
     if (SecTrustEvaluate(serverTrust, &trustResult) != errSecSuccess)
     {
@@ -114,7 +118,7 @@ TSKPinValidationResult verifyPublicKeyPin(SecTrustRef serverTrust, NSString *ser
         CFRelease(serverTrust);
         return TSKPinValidationResultErrorInvalidParameters;
     }
-    
+
     if ((trustResult != kSecTrustResultUnspecified) && (trustResult != kSecTrustResultProceed))
     {
         // Default SSL validation failed
@@ -124,7 +128,7 @@ TSKPinValidationResult verifyPublicKeyPin(SecTrustRef serverTrust, NSString *ser
         CFRelease(serverTrust);
         return TSKPinValidationResultFailedCertificateChainNotTrusted;
     }
-    
+
     // Check each certificate in the server's certificate chain (the trust object); start with the CA all the way down to the leaf
     CFIndex certificateChainLen = SecTrustGetCertificateCount(serverTrust);
     for(int i=(int)certificateChainLen-1;i>=0;i--)
@@ -134,7 +138,7 @@ TSKPinValidationResult verifyPublicKeyPin(SecTrustRef serverTrust, NSString *ser
         CFStringRef certificateSubject = SecCertificateCopySubjectSummary(certificate);
         TSKLog(@"Checking certificate with CN: %@", certificateSubject);
         CFRelease(certificateSubject);
-        
+
         // For each public key algorithm flagged as supported in the config, generate the subject public key info hash
         for (NSNumber *savedAlgorithm in supportedAlgorithms)
         {
@@ -146,7 +150,7 @@ TSKPinValidationResult verifyPublicKeyPin(SecTrustRef serverTrust, NSString *ser
                 CFRelease(serverTrust);
                 return TSKPinValidationResultErrorCouldNotGenerateSpkiHash;
             }
-            
+
             // Is the generated hash in our set of pinned hashes ?
             TSKLog(@"Testing SSL Pin %@", subjectPublicKeyInfoHash);
             if ([knownPins containsObject:subjectPublicKeyInfoHash])
@@ -157,47 +161,7 @@ TSKPinValidationResult verifyPublicKeyPin(SecTrustRef serverTrust, NSString *ser
             }
         }
     }
-    
-#if !TARGET_OS_IPHONE
-    // OS X only: if user-defined anchors are whitelisted, allow the App to not enforce pin validation
-    NSMutableArray *customRootCerts = [NSMutableArray array];
-    
-    // Retrieve the OS X host's list of user-defined CA certificates
-    CFArrayRef userRootCerts;
-    OSStatus status = SecTrustSettingsCopyCertificates(kSecTrustSettingsDomainUser, &userRootCerts);
-    if (status == errSecSuccess)
-    {
-        [customRootCerts addObjectsFromArray:(__bridge NSArray *)(userRootCerts)];
-        CFRelease(userRootCerts);
-    }
-    CFArrayRef adminRootCerts;
-    status = SecTrustSettingsCopyCertificates(kSecTrustSettingsDomainAdmin, &adminRootCerts);
-    if (status == errSecSuccess)
-    {
-        [customRootCerts addObjectsFromArray:(__bridge NSArray *)(adminRootCerts)];
-        CFRelease(adminRootCerts);
-    }
-    
-    // Is any certificate in the chain a custom anchor that was manually added to the OS' trust store ?
-    // If we get there, we shouldn't have to check the custom certificates' trust setting (trusted / not trusted)
-    // as the chain validation was successful right before
-    if ([customRootCerts count] > 0)
-    {
-        for(int i=0;i<certificateChainLen;i++)
-        {
-            SecCertificateRef certificate = SecTrustGetCertificateAtIndex(serverTrust, i);
-            
-            // Is the certificate chain's anchor a user-defined anchor ?
-            if ([customRootCerts containsObject:(__bridge id)(certificate)])
-            {
-                TSKLog(@"Detected user-defined trust anchor in the certificate chain");
-                CFRelease(serverTrust);
-                return TSKPinValidationResultFailedUserDefinedTrustAnchor;
-            }
-        }
-    }
-#endif
-    
+
     // If we get here, we didn't find any matching SPKI hash in the chain
     TSKLog(@"Error: SSL Pin not found for %@", serverHostname);
     CFRelease(serverTrust);
